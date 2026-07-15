@@ -162,13 +162,10 @@ class BoneThicknessMappingQuality:
 
 
 class HitPoint:
-    pid = None
-    point = None
-    normal = [0.0, 0.0, 0.0]
-
     def __init__(self, pid, point):
         self.pid = pid
         self.point = point
+        self.normal = [0.0, 0.0, 0.0]
 
 
 class BoneThicknessMapping(ScriptedLoadableModule):
@@ -184,41 +181,44 @@ class BoneThicknessMapping(ScriptedLoadableModule):
 
 
 class BoneThicknessMappingWidget(ScriptedLoadableModuleWidget):
-    # Data members --------------
-    state = BoneThicknessMappingState.WAITING
-    status, progress = 'N/A', 0
-    thicknessScalarArray, airCellScalarArray = None, None
-    thicknessColourNode, airCellColourNode = None, None
-    modelPolyData = None
-    segmentationBounds = None
-    topLayerPolyData = None
-    hitPointList = None
-    modelNode = None
-
-    # Configuration preferences
-    CONFIG_precision = 1.0
-    CONFIG_rayCastAxis = ctk.ctkAxesWidget.Left
-    CONFIG_segmentThresholdRange = [600, 3071]
-    CONFIG_regionOfInterest = [-100, 100]
-    CONFIG_minMaxAirCell = [0.0, 4.0]
-    CONFIG_minMaxSkullThickness = [0.0, 8.7]
-    CONFIG_mmOfAirPastBone = 4.0
-
-    # UI members (in order of appearance) --------------
-    infoLabel = None
-    volumeSelector = None
-    configuration_tools = None
-    statusLabel = None
-    executeButton = None
-    progressBar = None
-    finishButton = None
-    resultSection = None
-    displayThicknessSelector = None
-    displayFirstAirCellSelector = None
-    displayScalarBarCheckbox = None
-
     def __init__(self, parent=None):
         ScriptedLoadableModuleWidget.__init__(self, parent)
+        # Data members --------------
+        self.state = BoneThicknessMappingState.WAITING
+        self.status = 'N/A'
+        self.progress = 0
+        self.thicknessScalarArray = None
+        self.airCellScalarArray = None
+        self.thicknessColourNode = None
+        self.airCellColourNode = None
+        self.modelPolyData = None
+        self.segmentationBounds = None
+        self.topLayerPolyData = None
+        self.hitPointList = None
+        self.modelNode = None
+        self.createdNodeIDs = []
+
+        # Configuration preferences
+        self.CONFIG_precision = 1.0
+        self.CONFIG_rayCastAxis = ctk.ctkAxesWidget.Left
+        self.CONFIG_segmentThresholdRange = [600, 3071]
+        self.CONFIG_regionOfInterest = [-100, 100]
+        self.CONFIG_minMaxAirCell = [0.0, 4.0]
+        self.CONFIG_minMaxSkullThickness = [0.0, 8.7]
+        self.CONFIG_mmOfAirPastBone = 4.0
+
+        # UI members (in order of appearance) --------------
+        self.infoLabel = None
+        self.volumeSelector = None
+        self.configuration_tools = None
+        self.statusLabel = None
+        self.executeButton = None
+        self.progressBar = None
+        self.finishButton = None
+        self.resultSection = None
+        self.displayThicknessSelector = None
+        self.displayFirstAirCellSelector = None
+        self.displayScalarBarCheckbox = None
 
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
@@ -511,48 +511,88 @@ class BoneThicknessMappingWidget(ScriptedLoadableModuleWidget):
             BoneThicknessMappingLogic.update_input_volume(self.volumeSelector.currentNode().GetID())
         self.update_all()
 
+    def remove_created_nodes(self):
+        if not hasattr(self, 'createdNodeIDs'):
+            self.createdNodeIDs = []
+        for nodeID in self.createdNodeIDs:
+            node = slicer.mrmlScene.GetNodeByID(nodeID)
+            if node:
+                slicer.mrmlScene.RemoveNode(node)
+        self.createdNodeIDs = []
+        # Result state references the nodes just removed; invalidate it together so the
+        # result UI cannot stay enabled while pointing at deleted nodes (e.g. a failed rerun).
+        self.thicknessScalarArray = None
+        self.airCellScalarArray = None
+        self.thicknessColourNode = None
+        self.airCellColourNode = None
+        self.modelPolyData = None
+        self.topLayerPolyData = None
+        self.hitPointList = None
+        self.modelNode = None
+
     def click_execute(self):
-        # TODO add try and catch
         if self.state is not BoneThicknessMappingState.READY: return
         self.state = BoneThicknessMappingState.EXECUTING
         self.update_status(text='Initializing execution..', progress=0)
-        BoneThicknessMappingLogic.reset_view(self.CONFIG_rayCastAxis)
-        BoneThicknessMappingLogic.clear_3d_view()
-        BoneThicknessMappingLogic.set_scalar_colour_bar_state(0)
-        self.modelPolyData, self.segmentationBounds = BoneThicknessMappingLogic.process_segmentation(
-            threshold_range=self.CONFIG_segmentThresholdRange,
-            image=self.volumeSelector.currentNode(),
-            axis=self.CONFIG_rayCastAxis,
-            update_status=self.update_status
-        )
-        self.topLayerPolyData, self.hitPointList = BoneThicknessMappingLogic.rainfall_quad_cast(
-            poly_data=self.modelPolyData,
-            seg_bounds=self.segmentationBounds,
-            cast_axis=self.CONFIG_rayCastAxis,
-            precision=self.CONFIG_precision,
-            region_of_interest=self.CONFIG_regionOfInterest,
-            update_status=self.update_status
-        )
-        self.modelNode = BoneThicknessMappingLogic.build_model(
-            poly_data=self.topLayerPolyData,
-            update_status=self.update_status
-        )
-        self.thicknessScalarArray, self.airCellScalarArray = BoneThicknessMappingLogic.ray_cast_color_thickness(
-            poly_data=self.modelPolyData,
-            hit_point_list=self.hitPointList,
-            cast_axis=self.CONFIG_rayCastAxis,
-            dimensions=self.volumeSelector.currentNode().GetImageData().GetDimensions(),
-            mm_of_air_past_bone=self.CONFIG_mmOfAirPastBone,
-            update_status=self.update_status
-        )
-        self.thicknessColourNode, self.airCellColourNode = BoneThicknessMappingLogic.build_color_table_nodes(
-            minmax_thickness=self.CONFIG_minMaxSkullThickness,
-            minmax_air_cell=self.CONFIG_minMaxAirCell
-        )
-        # finalize
-        self.click_result_radio()
-        self.state = BoneThicknessMappingState.FINISHED
-        self.update_status(progress=100)
+        self.remove_created_nodes()
+        try:
+            BoneThicknessMappingLogic.reset_view(self.CONFIG_rayCastAxis)
+            BoneThicknessMappingLogic.clear_3d_view()
+            BoneThicknessMappingLogic.set_scalar_colour_bar_state(0)
+            self.modelPolyData, self.segmentationBounds, segNodeID = BoneThicknessMappingLogic.process_segmentation(
+                threshold_range=self.CONFIG_segmentThresholdRange,
+                image=self.volumeSelector.currentNode(),
+                axis=self.CONFIG_rayCastAxis,
+                update_status=self.update_status
+            )
+            if segNodeID: self.createdNodeIDs.append(segNodeID)
+            self.topLayerPolyData, self.hitPointList = BoneThicknessMappingLogic.rainfall_quad_cast(
+                poly_data=self.modelPolyData,
+                seg_bounds=self.segmentationBounds,
+                cast_axis=self.CONFIG_rayCastAxis,
+                precision=self.CONFIG_precision,
+                region_of_interest=self.CONFIG_regionOfInterest,
+                update_status=self.update_status
+            )
+            self.modelNode = BoneThicknessMappingLogic.build_model(
+                poly_data=self.topLayerPolyData,
+                update_status=self.update_status
+            )
+            if self.modelNode: self.createdNodeIDs.append(self.modelNode.GetID())
+            volumeNode = self.volumeSelector.currentNode()
+            voxelDimensions = volumeNode.GetImageData().GetDimensions()
+            voxelSpacing = volumeNode.GetSpacing()
+            # convert voxel counts to world-space (mm) extents so the ray length is correct
+            # for anisotropic/cropped volumes rather than assuming 1mm isotropic voxels
+            worldDimensions = [voxelDimensions[k] * voxelSpacing[k] for k in range(3)]
+            self.thicknessScalarArray, self.airCellScalarArray = BoneThicknessMappingLogic.ray_cast_color_thickness(
+                poly_data=self.modelPolyData,
+                hit_point_list=self.hitPointList,
+                cast_axis=self.CONFIG_rayCastAxis,
+                dimensions=worldDimensions,
+                mm_of_air_past_bone=self.CONFIG_mmOfAirPastBone,
+                update_status=self.update_status
+            )
+            self.thicknessColourNode, self.airCellColourNode = BoneThicknessMappingLogic.build_color_table_nodes(
+                minmax_thickness=self.CONFIG_minMaxSkullThickness,
+                minmax_air_cell=self.CONFIG_minMaxAirCell
+            )
+            if self.thicknessColourNode: self.createdNodeIDs.append(self.thicknessColourNode.GetID())
+            if self.airCellColourNode: self.createdNodeIDs.append(self.airCellColourNode.GetID())
+            # finalize
+            self.click_result_radio()
+            self.state = BoneThicknessMappingState.FINISHED
+            self.update_status(progress=100)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            slicer.util.errorDisplay("An error occurred during execution: " + str(e))
+            self.remove_created_nodes()
+            if self.volumeSelector.currentNode() is not None:
+                self.state = BoneThicknessMappingState.READY
+            else:
+                self.state = BoneThicknessMappingState.WAITING
+            self.update_all()
 
     def click_finish(self):
         self.state = BoneThicknessMappingState.WAITING
@@ -586,8 +626,8 @@ class BoneThicknessMappingWidget(ScriptedLoadableModuleWidget):
     def click_toggle_scalar_bar(self, state):
         if state == 0: BoneThicknessMappingLogic.set_scalar_colour_bar_state(0)
         elif state == 2:
-            if self.displayThicknessSelector.isChecked(): BoneThicknessMappingLogic.set_scalar_colour_bar_state(1, self.thicknessColourNode)
-            elif self.displayFirstAirCellSelector.isChecked(): BoneThicknessMappingLogic.set_scalar_colour_bar_state(1, self.airCellColourNode)
+            if self.displayThicknessSelector.isChecked(): BoneThicknessMappingLogic.set_scalar_colour_bar_state(1, self.thicknessColourNode.GetID())
+            elif self.displayFirstAirCellSelector.isChecked(): BoneThicknessMappingLogic.set_scalar_colour_bar_state(1, self.airCellColourNode.GetID())
 
     def release_memory(self):
 
@@ -645,12 +685,11 @@ class BoneThicknessMappingLogic(ScriptedLoadableModuleLogic):
 
     @staticmethod
     def clear_3d_view():
-        for n in slicer.mrmlScene.GetNodesByClass("vtkMRMLModelNode"): n.GetDisplayNode().SetVisibility(0)
-        for n in slicer.mrmlScene.GetNodesByClass("vtkMRMLSegmentationNode"): n.GetDisplayNode().SetVisibility(0)
         # hide 3D cube & labels
         v = slicer.util.getNode("View1")
-        v.SetBoxVisible(False)
-        v.SetAxisLabelsVisible(False)
+        if v:
+            v.SetBoxVisible(False)
+            v.SetAxisLabelsVisible(False)
 
     @staticmethod
     def process_segmentation(threshold_range, image, axis, update_status):
@@ -665,75 +704,88 @@ class BoneThicknessMappingLogic(ScriptedLoadableModuleLogic):
         # Create segmentation
         update_status(text="Creating segmentation...", progress=5)
         segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
-        segmentationNode.CreateDefaultDisplayNodes()
-        segmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(image)
-        segmentId = segmentationNode.GetSegmentation().AddEmptySegment("Bone")
-        segmentationNode.GetSegmentation().GetSegment(segmentId).SetColor([0.9, 0.8, 0.7])
+        segmentEditorNode = None
+        try:
+            segmentationNode.CreateDefaultDisplayNodes()
+            segmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(image)
+            segmentId = segmentationNode.GetSegmentation().AddEmptySegment("Bone")
+            segmentationNode.GetSegmentation().GetSegment(segmentId).SetColor([0.9, 0.8, 0.7])
 
-        # Create segment editor to get access to effects
-        update_status(text="Starting segmentation editor...", progress=6)
-        segmentEditorWidget = slicer.qMRMLSegmentEditorWidget()
-        segmentEditorWidget.setMRMLScene(slicer.mrmlScene)
-        segmentEditorNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentEditorNode")
-        segmentEditorWidget.setMRMLSegmentEditorNode(segmentEditorNode)
-        segmentEditorWidget.setSegmentationNode(segmentationNode)
-        segmentEditorWidget.setMasterVolumeNode(image)
+            # Create segment editor to get access to effects
+            update_status(text="Starting segmentation editor...", progress=6)
+            segmentEditorWidget = slicer.qMRMLSegmentEditorWidget()
+            segmentEditorWidget.setMRMLScene(slicer.mrmlScene)
+            segmentEditorNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentEditorNode")
+            segmentEditorWidget.setMRMLSegmentEditorNode(segmentEditorNode)
+            segmentEditorWidget.setSegmentationNode(segmentationNode)
+            # setMasterVolumeNode was renamed setSourceVolumeNode in Slicer 5; support both
+            if hasattr(segmentEditorWidget, 'setSourceVolumeNode'):
+                segmentEditorWidget.setSourceVolumeNode(image)
+            else:
+                segmentEditorWidget.setMasterVolumeNode(image)
 
-        # Threshold
-        update_status(text="Processing threshold segmentation...", progress=8)
-        segmentEditorWidget.setActiveEffectByName("Threshold")
-        effect = segmentEditorWidget.activeEffect()
-        effect.setParameter("MinimumThreshold", str(threshold_range[0]))  # 1460 #1160 # 223
-        effect.setParameter("MaximumThreshold", str(threshold_range[1]))
-        effect.self().onApply()
+            # Threshold
+            update_status(text="Processing threshold segmentation...", progress=8)
+            segmentEditorWidget.setActiveEffectByName("Threshold")
+            effect = segmentEditorWidget.activeEffect()
+            effect.setParameter("MinimumThreshold", str(threshold_range[0]))  # 1460 #1160 # 223
+            effect.setParameter("MaximumThreshold", str(threshold_range[1]))
+            effect.self().onApply()
 
-        # Smoothing
-        update_status(text="Processing smoothing segmentation...", progress=10)
-        segmentEditorWidget.setActiveEffectByName("Smoothing")
-        effect = segmentEditorWidget.activeEffect()
-        effect.setParameter("SmoothingMethod", "MORPHOLOGICAL_OPENING")
-        effect.setParameter("KernelSizeMm", 0.5)
-        effect.self().onApply()
+            # Smoothing
+            update_status(text="Processing smoothing segmentation...", progress=10)
+            segmentEditorWidget.setActiveEffectByName("Smoothing")
+            effect = segmentEditorWidget.activeEffect()
+            effect.setParameter("SmoothingMethod", "MORPHOLOGICAL_OPENING")
+            effect.setParameter("KernelSizeMm", 0.5)
+            effect.self().onApply()
 
-        # Islands
-        update_status(text="Processing island segmentation...", progress=11)
-        segmentEditorWidget.setActiveEffectByName("Islands")
-        effect = segmentEditorWidget.activeEffect()
-        effect.setParameter("Operation", "KEEP_LARGEST_ISLAND")
-        effect.setParameter("MinimumSize", 1000)
-        effect.self().onApply()
+            # Islands
+            update_status(text="Processing island segmentation...", progress=11)
+            segmentEditorWidget.setActiveEffectByName("Islands")
+            effect = segmentEditorWidget.activeEffect()
+            effect.setParameter("Operation", "KEEP_LARGEST_ISLAND")
+            effect.setParameter("MinimumSize", 1000)
+            effect.self().onApply()
 
-        # Crop
-        # update_status("Cropping segmentation...")
-        # segmentEditorWidget.setActiveEffectByName("Scissors")
-        # effect = segmentEditorWidget.activeEffect()
-        # effect.setParameter("MinimumThreshold", "223")
-        # effect.setParameter("MaximumThreshold", "3071")
-        # effect.self().onApply()
+            # Crop
+            # update_status("Cropping segmentation...")
+            # segmentEditorWidget.setActiveEffectByName("Scissors")
+            # effect = segmentEditorWidget.activeEffect()
+            # effect.setParameter("MinimumThreshold", "223")
+            # effect.setParameter("MaximumThreshold", "3071")
+            # effect.self().onApply()
 
-        # Clean up
-        update_status(text="Cleaning up...", progress=13)
-        segmentEditorWidget.setActiveEffectByName(None)
-        slicer.mrmlScene.RemoveNode(segmentEditorNode)
+            # Clean up
+            update_status(text="Cleaning up...", progress=13)
+            segmentEditorWidget.setActiveEffectByName(None)
 
-        # Make segmentation results visible in 3D and set focal
-        update_status(text="Rendering...", progress=15)
-        segmentationNode.CreateClosedSurfaceRepresentation()
-        BoneThicknessMappingLogic.reset_view(axis)
+            # Make segmentation results visible in 3D and set focal
+            update_status(text="Rendering...", progress=15)
+            segmentationNode.CreateClosedSurfaceRepresentation()
+            BoneThicknessMappingLogic.reset_view(axis)
 
-        # Retrieve segmentation bounds
-        bounds = [0, 0, 0, 0, 0, 0]
-        segmentationNode.GetBounds(bounds)
+            # Retrieve segmentation bounds
+            bounds = [0, 0, 0, 0, 0, 0]
+            segmentationNode.GetBounds(bounds)
 
-        # Make sure surface mesh cells are consistently oriented
-        update_status(text="Retrieving surface mesh...", progress=18)
-        if slicer.app.majorVersion == 4 and slicer.app.minorVersion <= 10:
-            polyData = segmentationNode.GetClosedSurfaceRepresentation(segmentId)
-        else:
-            polyData = vtk.vtkPolyData()
-            segmentationNode.GetClosedSurfaceRepresentation(segmentId, polyData)
+            # Make sure surface mesh cells are consistently oriented
+            update_status(text="Retrieving surface mesh...", progress=18)
+            if slicer.app.majorVersion == 4 and slicer.app.minorVersion <= 10:
+                polyData = segmentationNode.GetClosedSurfaceRepresentation(segmentId)
+            else:
+                polyData = vtk.vtkPolyData()
+                segmentationNode.GetClosedSurfaceRepresentation(segmentId, polyData)
 
-        return polyData, bounds
+            return polyData, bounds, segmentationNode.GetID()
+        except Exception:
+            # segmentationNode is not yet tracked by the caller; remove it so it does not leak
+            slicer.mrmlScene.RemoveNode(segmentationNode)
+            raise
+        finally:
+            # the segment editor node is temporary regardless of success or failure
+            if segmentEditorNode is not None:
+                slicer.mrmlScene.RemoveNode(segmentEditorNode)
 
     @staticmethod
     def determine_cast_axis_index(cast_axis):
@@ -759,7 +811,8 @@ class BoneThicknessMappingLogic(ScriptedLoadableModuleLogic):
         castPlaneIndices.remove(castIndex)
 
         update_status(text="Calculating segmentation cast-plane...", progress=43)
-        depthIncrements = [seg_bounds[castIndex], seg_bounds[castIndex+1]]
+        # depthIncrements must index the min and max for the cast axis, so we multiply by 2
+        depthIncrements = [seg_bounds[castIndex*2], seg_bounds[castIndex*2+1]]
         if cast_axis in [ctk.ctkAxesWidget.Right, ctk.ctkAxesWidget.Posterior, ctk.ctkAxesWidget.Superior]: depthIncrements.reverse()
         horizontalIncrements = [seg_bounds[castPlaneIndices[0]*2], seg_bounds[castPlaneIndices[0]*2+1]]
         verticalIncrements = [seg_bounds[castPlaneIndices[1]*2],  seg_bounds[castPlaneIndices[1]*2+1]]
@@ -806,12 +859,30 @@ class BoneThicknessMappingLogic(ScriptedLoadableModuleLogic):
                 m = precision*6
                 if d1 > m or d2 > m or d3 > m: continue
                 # calculate normals
-                rawNormal = numpy.linalg.solve(numpy.array([hitPoints[0].point, hitPoints[1].point, hitPoints[2].point]), [1, 1, 1])
-                hitPointMatrix[i][j].normal = rawNormal / numpy.sqrt(numpy.sum(rawNormal**2))
-                # # check if quad is acceptable by normal vs. cast vector
-                # v1, v2 = numpy.array(hitPointMatrix[i][j].normal), numpy.array(castVector)
-                # degrees = numpy.degrees(numpy.math.atan2(numpy.cross(v1, v2).shape[0], numpy.dot(v1, v2)))
+                p0 = numpy.array(hitPoints[0].point)
+                p1 = numpy.array(hitPoints[1].point)
+                p2 = numpy.array(hitPoints[2].point)
+                cross = numpy.cross(p1 - p0, p2 - p0)
+                norm = numpy.linalg.norm(cross)
+                if norm > 1e-8:
+                    faceNormal = cross / norm
+                    if numpy.dot(faceNormal, castVector) < 0:
+                        faceNormal = -faceNormal
+                    for hp in hitPoints:
+                        hp.normal = [hp.normal[k] + faceNormal[k] for k in range(3)]
+
                 cells.InsertNextCell(4, [p.pid for p in hitPoints])
+
+        # normalize accumulated normals
+        for r in hitPointMatrix:
+            for p in r:
+                if p is not None:
+                    norm = numpy.linalg.norm(p.normal)
+                    if norm > 1e-8:
+                        p.normal = (numpy.array(p.normal) / norm).tolist()
+                    else:
+                        p.normal = list(castVector)
+
         update_status(text="Finished ray-casting in " + str("%.1f" % (time.time() - startTime)) + "s, found " + str(cells.GetNumberOfCells()) + " cells...", progress=80)
 
         # build poly data
@@ -823,14 +894,14 @@ class BoneThicknessMappingLogic(ScriptedLoadableModuleLogic):
 
     @staticmethod
     def build_model(poly_data, update_status):
-        update_status(text="Rendering top layer...", progress=20)
+        update_status(text="Rendering top layer...", progress=80)
         modelNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelNode')
         modelNode.SetAndObservePolyData(poly_data)
         modelNode.CreateDefaultDisplayNodes()
         modelDisplayNode = modelNode.GetModelDisplayNode()
         modelDisplayNode.SetFrontfaceCulling(0)
         modelDisplayNode.SetBackfaceCulling(0)
-        update_status(text="Top layer rendered...", progress=40)
+        update_status(text="Top layer rendered...", progress=81)
         return modelNode
 
     @staticmethod
@@ -871,8 +942,10 @@ class BoneThicknessMappingLogic(ScriptedLoadableModuleLogic):
         skullThicknessArray, airCellDistanceArray = init_array(BoneThicknessMappingType.THICKNESS), init_array(BoneThicknessMappingType.AIR_CELL)
         tol, pCoords, subId = 0.000, [0, 0, 0], vtk.reference(0)
         pointsOfIntersection, cellsOfIntersection = vtk.vtkPoints(), vtk.vtkIdList()
+        # use the largest world-space extent so the ray spans the volume regardless of
+        # cast direction or axis ordering; ray length does not affect the measured distances
+        stretchFactor = max(dimensions)
         for i, hitPoint in enumerate(hit_point_list):
-            stretchFactor = dimensions[castIndex]
             start = [hitPoint.point[0] + hitPoint.normal[0]*stretchFactor, hitPoint.point[1] + hitPoint.normal[1]*stretchFactor, hitPoint.point[2] + hitPoint.normal[2]*stretchFactor]
             end = [hitPoint.point[0] - hitPoint.normal[0]*stretchFactor, hitPoint.point[1] - hitPoint.normal[1]*stretchFactor, hitPoint.point[2] - hitPoint.normal[2]*stretchFactor]
             cellLocator.FindCellsAlongLine(start, end, tol, cellsOfIntersection)
@@ -896,15 +969,13 @@ class BoneThicknessMappingLogic(ScriptedLoadableModuleLogic):
 
     @staticmethod
     def build_color_table_node(name, table_max):
-        table = slicer.vtkMRMLColorTableNode()
-        table.SetName(name)
+        table = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLColorTableNode', name)
         table.SetHideFromEditors(0)
         table.SetTypeToFile()
         table.NamesInitialisedOff()
         table.SetNumberOfColors(table_max)
         table.GetLookupTable().SetTableRange(0, table_max)
         table.NamesInitialisedOn()
-        slicer.mrmlScene.AddNode(table)
         return table
 
     @staticmethod
